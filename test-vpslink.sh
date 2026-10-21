@@ -13,6 +13,14 @@ PASS=0
 FAIL=0
 FAILED_TESTS=()
 
+# Colour is used only on a terminal. Piped or captured output (CI logs, for
+# example) stays plain text so it can be grepped and parsed.
+if [[ -t 1 ]] && [[ "${TERM:-dumb}" != 'dumb' ]]; then
+  C_PASS=$'\033[32m'; C_FAIL=$'\033[31m'; C_BOLD=$'\033[1m'; C_OFF=$'\033[0m'
+else
+  C_PASS=''; C_FAIL=''; C_BOLD=''; C_OFF=''
+fi
+
 # --- test helpers -----------------------------------------------------------
 
 setup_home() {
@@ -30,11 +38,11 @@ teardown_home() {
   export HOME="$ORIG_HOME"
 }
 
-ok()  { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
+ok()  { PASS=$((PASS+1)); printf '  %sPASS%s %s\n' "$C_PASS" "$C_OFF" "$1"; }
 bad() {
   FAIL=$((FAIL+1))
   FAILED_TESTS+=("$1")
-  printf '  \033[31mFAIL\033[0m %s\n' "$1"
+  printf '  %sFAIL%s %s\n' "$C_FAIL" "$C_OFF" "$1"
   if [[ -n "${2:-}" ]]; then printf '       %s\n' "$2"; fi
 }
 
@@ -88,7 +96,51 @@ file_sha256() {
   fi
 }
 
-section() { printf '\n\033[1m%s\033[0m\n' "$1"; }
+# Portability lint for the "option after an operand" hazard.
+#
+# BSD and macOS use getopt, which stops at the first non-option argument.
+# GNU coreutils permute the arguments and accept both orders, so a command
+# such as "chmod 700 -- path" works on Linux but fails on macOS with
+# "chmod: --: No such file or directory". On the tool that aborts the run
+# under "set -e". Every "--" must therefore precede all operands.
+find_option_after_operand() {
+  awk '
+    {
+      line = $0
+      sub(/#.*$/, "", line)
+      gsub(/\[\[[^]]*\]\]/, " ", line)      # drop [[ ... ]] conditionals
+      gsub(/\(\([^)]*\)\)/, " ", line)       # drop (( ... )) arithmetic
+      n = split(line, tok, /[ \t]+/)
+      for (i = 1; i <= n; i++) {
+        if (tok[i] != "--") continue
+        # Only the tokens of the same simple command matter: a pipeline or
+        # a list separator starts a new command.
+        start = 2
+        for (k = i - 1; k >= 2; k--) {
+          if (tok[k] ~ /^[|;&]+$/ || tok[k] ~ /^\($/ || tok[k] ~ /^\{$/ ||
+              tok[k] == "do" || tok[k] == "then" || tok[k] == "else") {
+            start = k + 1
+            break
+          }
+        }
+        for (j = start; j < i; j++) {
+          t = tok[j]
+          if (t ~ /^-/) continue                    # a flag: fine
+          if (t ~ /^[a-z_][a-zA-Z0-9_]*$/) continue # a command name: fine
+          if (t ~ /\$\(/) continue                  # inside a substitution
+          if (t ~ /^[&|;{}()!]+$/) continue         # a shell metacharacter
+          printf "%s:%d: %s\n", FILENAME, FNR, $0
+          found = 1
+          break
+        }
+        break
+      }
+    }
+    END { exit(found ? 1 : 0) }
+  ' "$1"
+}
+
+section() { printf '\n%s%s%s\n' "$C_BOLD" "$1" "$C_OFF"; }
 
 # ===========================================================================
 section '1. CLI surface: --help / --version / unknown option'
@@ -223,7 +275,7 @@ printf 'Host old\n    HostName old.example.com\n' > "$HOME/.ssh/config"
 ssh-keygen -q -t ed25519 -N '' -f "$HOME/.ssh/id_ed25519" -C 'test' </dev/null
 "$SUT" --alias vps --host srv.example.com --user hemayet \
        --auth key --key "$HOME/.ssh/id_ed25519" --yes --no-test >/dev/null 2>&1
-backup=$(find "$HOME/.ssh" -maxdepth 1 -name 'config.bak.*' -type f | head -n1)
+backup=$(find "$HOME/.ssh" -name 'config.bak.*' -type f 2>/dev/null | head -n1)
 if [[ -n "$backup" ]]; then
   ok 'a timestamped backup was created'
   assert_contains 'backup holds the original content' "$(cat "$backup")" 'Host old'
@@ -467,7 +519,7 @@ out=$(printf 'vps\nsrv.example.com\nu\n22\n1\n%s\n60\n10\ny\nn\nn\n' "$HOME/.ssh
   | "$SUT" --no-test 2>&1)
 assert_contains 'declining confirmation aborts cleanly' "$out" 'Cancelled'
 assert_file_absent 'no config file is created when the user declines' "$HOME/.ssh/config"
-leftovers=$(find "$HOME/.ssh" -maxdepth 1 -name 'config.tmp.*' -type f | wc -l)
+leftovers=$(find "$HOME/.ssh" -name 'config.tmp.*' -type f 2>/dev/null | wc -l | tr -d '[:space:]')
 assert_eq 'no temp files are left behind' 0 "$leftovers"
 teardown_home
 
@@ -558,6 +610,16 @@ assert_ne 'os_release_get finds an ID in /etc/os-release' 'not-found' "$?"
 assert_eq 'the managed-block prefix is "vpslink"' 'vpslink' "$MARKER_PREFIX"
 assert_eq 'the legacy prefix is still recognised' 'vps-login-setup' "$LEGACY_MARKER_PREFIX"
 
+# Portability lint: "--" must never follow an operand (BSD getopt hazard).
+for f in "$SCRIPT_DIR/vpslink.sh" "$SCRIPT_DIR/run.sh" "$SCRIPT_DIR/test-vpslink.sh"; do
+  out=$(find_option_after_operand "$f" 2>&1); rc=$?
+  if ((rc == 0)); then
+    ok "no option-after-operand in $(basename "$f")"
+  else
+    bad "no option-after-operand in $(basename "$f")" "$out"
+  fi
+done
+
 # ===========================================================================
 section '20. The real user SSH config was not touched'
 # ===========================================================================
@@ -573,7 +635,7 @@ else
 fi
 
 # ===========================================================================
-printf '\n\033[1mResult: %d passed, %d failed\033[0m\n' "$PASS" "$FAIL"
+printf '\n%sResult: %d passed, %d failed%s\n' "$C_BOLD" "$PASS" "$FAIL" "$C_OFF"
 if ((FAIL > 0)); then
   printf 'Failed tests:\n'
   for t in "${FAILED_TESTS[@]}"; do printf '  - %s\n' "$t"; done

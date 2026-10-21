@@ -430,12 +430,12 @@ The suite creates a throw-away `HOME` for every test, so **your real
 `~/.ssh/config` is never modified**. It needs no network, no root and no
 live VPS. It exits `0` on success and `1` on any failure.
 
-Latest result on this machine: **134 passed, 0 failed**.
+Latest result on this machine: **137 passed, 0 failed**.
 
 ```bash
 $ ./test-vpslink.sh
 ...
-[1mResult: 134 passed, 0 failed[0m
+[1mResult: 137 passed, 0 failed[0m
 ```
 
 ### Continuous integration
@@ -589,7 +589,7 @@ the contributors.
 .
 ├── vpslink.sh              # the tool (single source of truth)
 ├── run.sh                  # thin wrapper: exec vpslink.sh "$@"
-├── test-vpslink.sh         # isolated regression suite (134 checks)
+├── test-vpslink.sh         # isolated regression suite (137 checks)
 ├── INSTRUCTION.md          # full operating manual
 ├── LICENSE                 # BSD 3-Clause
 ├── .github/workflows/ci.yml

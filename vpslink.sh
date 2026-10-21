@@ -453,7 +453,7 @@ manage_ssh_keys() {
   local key_dir
   key_dir=$(dirname -- "$KEY_PATH")
   mkdir -p -- "$key_dir"
-  chmod 700 -- "$key_dir"
+  chmod -- 700 "$key_dir"
 
   if [[ -e $KEY_PATH || -e $KEY_PATH.pub ]]; then
     warn "A key already exists at $KEY_PATH"
@@ -492,8 +492,8 @@ manage_ssh_keys() {
     ssh-keygen "${keygen_args[@]}"
   fi
 
-  chmod 600 -- "$KEY_PATH"
-  [[ ! -f $KEY_PATH.pub ]] || chmod 644 -- "$KEY_PATH.pub"
+  chmod -- 600 "$KEY_PATH"
+  [[ ! -f $KEY_PATH.pub ]] || chmod -- 644 "$KEY_PATH.pub"
 
   success "SSH key pair created: $KEY_PATH"
 }
@@ -531,7 +531,7 @@ backup_ssh_config() {
   [[ -e $config ]] || return 0
   backup="${config}.bak.$(date +%Y%m%d%H%M%S)"
   cp -p -- "$config" "$backup" || die "Could not back up $config"
-  chmod 600 -- "$backup" 2>/dev/null || true
+  chmod -- 600 "$backup" 2>/dev/null || true
   info "Backup created: $backup"
 }
 
@@ -596,12 +596,12 @@ configure_ssh_alias() {
   local marker_prefix=$MARKER_PREFIX
 
   mkdir -p -- "$ssh_dir"
-  chmod 700 -- "$ssh_dir"
+  chmod -- 700 "$ssh_dir"
   [[ -w $ssh_dir ]] || die "SSH directory is not writable: $ssh_dir"
 
   if [[ -e $config ]]; then
     [[ -w $config ]] || die "SSH config is not writable: $config"
-    chmod 600 -- "$config" 2>/dev/null || true
+    chmod -- 600 "$config" 2>/dev/null || true
     if config_has_alias "$config" "$ALIAS"; then
       existing=1
       if grep -Fqx -- "# BEGIN $MARKER_PREFIX: $ALIAS" "$config"; then
@@ -707,7 +707,7 @@ configure_ssh_alias() {
     printf '%s\n' "$write_end"
   } >> "$tmp"
 
-  chmod 600 -- "$tmp"
+  chmod -- 600 "$tmp"
 
   # Validate the staged file with OpenSSH before it replaces the real config.
   if ! ssh -G -F "$tmp" "$ALIAS" >/dev/null 2>&1; then
@@ -716,7 +716,7 @@ configure_ssh_alias() {
   fi
 
   mv -f -- "$tmp" "$config"
-  chmod 600 -- "$config"
+  chmod -- 600 "$config"
   cleanup
   TMP_FILES=()
 
@@ -893,7 +893,7 @@ install_wrapper() {
   fi
 
   mkdir -p -- "$bindir"
-  chmod 700 -- "$bindir"
+  chmod -- 700 "$bindir"
 
   {
     printf '#!/bin/sh\n'
@@ -901,7 +901,7 @@ install_wrapper() {
     printf 'exec ssh %s "$@"\n' "$ALIAS"
   } > "$wrapper"
 
-  chmod 755 -- "$wrapper"
+  chmod -- 755 "$wrapper"
   success "Wrapper installed: $wrapper"
 
   case ":$PATH:" in
