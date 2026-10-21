@@ -766,8 +766,8 @@ getent ahosts srv.example.com # does DNS resolve?
 | `ssh: Could not resolve hostname vps` | The alias is missing from the config OpenSSH reads. `ls -l ~/.ssh/config`; confirm you use the same account; `ssh -G vps` |
 | `Permission denied (publickey)` | The public key is not installed on the VPS, or the username is wrong. `ssh-copy-id -i ~/.ssh/id_ed25519.pub -p PORT USER@HOST` |
 | `Host key verification failed` | The stored key does not match. Only if you know the VPS was reinstalled: `ssh-keygen -R HOST` |
-| `Connection timed out` | Unreachable host — check DNS, firewall, security groups, and the port |
-| `Connection refused` | Nothing is listening on that port — confirm the `sshd` port |
+| `The connection to HOST:PORT timed out - packets are being dropped` | A firewall or security group is dropping the port, the VPS is down, or your own network blocks it — check both ends |
+| `Nothing is listening on HOST:PORT - the host refused the connection` | The host answered but the port is closed — confirm the `sshd` "Port" setting |
 | `Agent refused the key` / `no identities` | Passphrase-protected key not loaded: `eval "$(ssh-agent -s)" && ssh-add ~/.ssh/id_ed25519` |
 | `Bad configuration option` | Typo in your config — `ssh -G vps` shows the parse error |
 | `Alias 'vps' exists and is unmanaged` | The alias is not one of the tool's blocks; re-run interactively to choose replace/rename/cancel |
@@ -778,7 +778,8 @@ getent ahosts srv.example.com # does DNS resolve?
 | Message | Meaning |
 |---|---|
 | `DNS lookup failed` | The hostname did not resolve — check the spelling and that the domain is published |
-| `Cannot reach HOST:PORT` | The TCP connection failed — firewall, wrong port, or the server is down |
+| `The host did not answer at all` | The port is filtered — firewall, security group, wrong port, or the server is down |
+| `Authenticated successfully, but the test command returned exit code 1` | The login worked; the server only allows specific commands (GitHub does this). Not an authentication problem |
 | `Host-key verification failed` | The server key changed or is not yet trusted |
 | `Authentication failed` | The key or password was rejected — the public key is probably not installed yet |
 | `The SSH agent has no loaded identity` | Unlock the key with `ssh-add` |

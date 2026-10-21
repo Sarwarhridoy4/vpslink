@@ -39,6 +39,7 @@ teardown_home() {
 }
 
 ok()  { PASS=$((PASS+1)); printf '  %sPASS%s %s\n' "$C_PASS" "$C_OFF" "$1"; }
+info() { printf '  %sSKIP%s %s\n' "$C_BOLD" "$C_OFF" "$1"; }
 bad() {
   FAIL=$((FAIL+1))
   FAILED_TESTS+=("$1")
@@ -426,14 +427,10 @@ section '11. Connectivity failure is reported honestly'
 setup_home
 # Port 1 on localhost is closed -> "connection refused".
 out=$("$SUT" --alias vps --host 127.0.0.1 --user u --port 1 --auth password --yes 2>&1)
-assert_contains 'closed port is reported' "$out" 'Cannot reach'
-# The exact wording depends on which probe tool is available (nc on most
-# systems, /dev/tcp+timeout otherwise, neither on a bare macOS).
-if [[ "$out" == *'closed or unreachable'* || "$out" == *'failed or timed out'* ]]; then
-  ok 'the probe failure is described'
-else
-  bad 'the probe failure is described' "$out"
-fi
+assert_contains 'closed port is reported' "$out" 'Nothing is listening on'
+assert_contains 'a closed port is distinguished from a filtered one' "$out" 'refused the connection'
+# The final verdict must name the actual reason.
+assert_contains 'the verdict names the connectivity reason' "$out" 'Connectivity: port 1 is closed'
 
 # A non-resolving name -> DNS warning.
 out=$("$SUT" --alias vps --host no-such-host.invalid --user u --port 22 --auth password --yes 2>&1)
@@ -619,6 +616,42 @@ assert_ne 'os_release_get finds an ID in /etc/os-release' 'not-found' "$?"
 # The marker constants must be the ones written into the config.
 assert_eq 'the managed-block prefix is "vpslink"' 'vpslink' "$MARKER_PREFIX"
 assert_eq 'the legacy prefix is still recognised' 'vps-login-setup' "$LEGACY_MARKER_PREFIX"
+
+# The TCP probe must distinguish a closed port from a filtered one: they have
+# completely different causes and different fixes.
+probe_tcp_port 127.0.0.1 1 3
+assert_eq 'a closed port is classified as refused' 'refused' "$TCP_RESULT"
+
+# An open local port must be classified as reachable.
+LOCAL_PORT=45678
+listener_started=0
+if command -v python3 >/dev/null 2>&1; then
+  python3 -c "
+import socket, time
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(('127.0.0.1', $LOCAL_PORT))
+s.listen(1)
+time.sleep(20)
+" >/dev/null 2>&1 &
+  listener_pid=$!
+  sleep 1
+  listener_started=1
+elif command -v nc >/dev/null 2>&1; then
+  nc -l 127.0.0.1 "$LOCAL_PORT" >/dev/null 2>&1 &
+  listener_pid=$!
+  sleep 1
+  listener_started=1
+fi
+
+if ((listener_started)); then
+  probe_tcp_port 127.0.0.1 "$LOCAL_PORT" 3
+  assert_eq 'an open port is classified as reachable' 'reachable' "$TCP_RESULT"
+  kill "$listener_pid" 2>/dev/null
+  wait "$listener_pid" 2>/dev/null
+else
+  info 'No local listener available; skipping the reachable-port check.'
+fi
 
 # Portability lint: "--" must never follow an operand (BSD getopt hazard).
 for f in "$SCRIPT_DIR/vpslink.sh" "$SCRIPT_DIR/run.sh" "$SCRIPT_DIR/test-vpslink.sh"; do

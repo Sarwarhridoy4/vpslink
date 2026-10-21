@@ -739,10 +739,12 @@ configure_ssh_alias() {
 validate_ssh_config() {
   step 'Configuration validation'
 
-  local config="$HOME/.ssh/config" output
-  # -F is used explicitly: OpenSSH expands "~" through the passwd database, so
-  # "ssh -G" without -F would read a different file whenever HOME differs.
-  if output=$(ssh -G -F "$config" "$ALIAS" 2>&1); then
+  local config="$HOME/.ssh/config" output eff_config
+  # The effective config is built explicitly: OpenSSH expands "~" through the
+  # passwd database, so "ssh -G" without -F would read a different file
+  # whenever HOME differs.
+  eff_config=$(build_effective_config "$config")
+  if output=$(ssh -G -F "$eff_config" "$ALIAS" 2>&1); then
     local effective_host effective_port effective_user
     # "ssh -G" prints "host <name-as-given>" first; the resolved destination is
     # in the "hostname" field.
@@ -758,6 +760,122 @@ validate_ssh_config() {
     printf '%s\n' "$output" | sed -n '1,10p' >&2
     return 1
   fi
+}
+
+# Build a config file for OpenSSH that reproduces the default read order:
+# the system-wide file first, then the user's file. Passing "-F <user file>"
+# alone would silently skip /etc/ssh/ssh_config, and a plain "ssh alias"
+# would read whichever file OpenSSH resolves "~" to, which is the passwd
+# home rather than $HOME. Including both keeps the test faithful to what
+# the user will actually experience.
+build_effective_config() {
+  local user_config=$1 tmp
+  tmp=$(mktemp "${TMPDIR:-/tmp}/vpslink-conf.XXXXXX")
+  track_tmp "$tmp"
+  if [[ -r /etc/ssh/ssh_config ]]; then
+    printf 'Include "/etc/ssh/ssh_config"\n' > "$tmp"
+  else
+    : > "$tmp"
+  fi
+  printf 'Include "%s"\n' "$user_config" >> "$tmp"
+  printf '%s' "$tmp"
+}
+
+# Is /dev/tcp available in this bash? It is a compile-time feature, and
+# without it the fallback probe cannot work. With the feature present bash
+# reports the connection error explicitly ("connect: Connection refused");
+# without it the redirection simply fails with "No such file or directory".
+devtcp_supported() {
+  local out rc=0
+  out=$(bash -c 'exec 3<>/dev/tcp/127.0.0.1/1' 2>&1) || rc=$?
+  if ((rc == 0)); then
+    return 0
+  fi
+  [[ $out == *'connect:'* ]]
+}
+
+# Probe the SSH port and classify the outcome.
+# Sets TCP_RESULT to one of: reachable | refused | filtered | unknown
+#   refused  - the host answered but nothing is listening (connection reset)
+#   filtered - packets are dropped, so the connection times out
+# The two need very different fixes, so they are reported separately.
+TCP_RESULT='unknown'
+TCP_PROBE_OUTPUT=''
+
+probe_tcp_port() {
+  local host=$1 port=$2 timeout_s=$3 out rc=0 start elapsed target
+
+  TCP_RESULT='unknown'
+  TCP_PROBE_OUTPUT=''
+
+  if command -v nc >/dev/null 2>&1; then
+    out=$(nc -v -z -w "$timeout_s" "$host" "$port" 2>&1) || rc=$?
+    if ((rc == 0)); then
+      TCP_RESULT='reachable'
+      return 0
+    fi
+    TCP_PROBE_OUTPUT=$out
+    case "$out" in
+      *[Rr]efused*)                     TCP_RESULT='refused';  return 1 ;;
+      *[Tt]imed*out*|*[Tt]imeout*)      TCP_RESULT='filtered'; return 1 ;;
+      *[Ii]nvalid\ option*|*[Uu]sage*)  : ;;   # this nc has no -z: try the fallback
+      *)                                TCP_RESULT='unknown'; return 1 ;;
+    esac
+  fi
+
+  if command -v timeout >/dev/null 2>&1; then
+    # bash's /dev/tcp needs a bracketed IPv6 literal. The host is strictly
+    # validated beforehand, so no shell metacharacters can reach this string.
+    target=$host
+    [[ $host == *:* ]] && target="[$host]"
+    start=$(date +%s)
+    if timeout "$timeout_s" bash -c "exec 3<>/dev/tcp/${target}/${port}" >/dev/null 2>&1; then
+      TCP_RESULT='reachable'
+      return 0
+    fi
+    elapsed=$(( $(date +%s) - start ))
+    # A refused connection comes back immediately; a dropped one uses up the
+    # whole timeout.
+    if ((elapsed + 1 >= timeout_s)); then
+      TCP_RESULT='filtered'
+    else
+      TCP_RESULT='refused'
+    fi
+    return 1
+  fi
+
+  # Last resort: no nc and no timeout. Run the connection attempt in the
+  # background and kill it after the timeout, so a filtered port cannot hang
+  # the script. A refused connection returns at once; a dropped one is still
+  # waiting when the watchdog kills it.
+  if ! devtcp_supported; then
+    TCP_PROBE_OUTPUT='this bash has no /dev/tcp support, so the port cannot be probed'
+    return 2
+  fi
+
+  target=$host
+  [[ $host == *:* ]] && target="[$host]"
+  start=$(date +%s)
+  ( exec 3<>"/dev/tcp/${target}/${port}" ) >/dev/null 2>&1 &
+  local conn_pid=$!
+  ( sleep "$timeout_s"; kill "$conn_pid" 2>/dev/null ) >/dev/null 2>&1 &
+  local killer_pid=$!
+  local wait_rc=0
+  wait "$conn_pid" 2>/dev/null || wait_rc=$?
+  kill "$killer_pid" 2>/dev/null
+  wait "$killer_pid" 2>/dev/null
+
+  if ((wait_rc == 0)); then
+    TCP_RESULT='reachable'
+    return 0
+  fi
+  elapsed=$(( $(date +%s) - start ))
+  if ((elapsed + 1 >= timeout_s)); then
+    TCP_RESULT='filtered'
+  else
+    TCP_RESULT='refused'
+  fi
+  return 1
 }
 
 # Probe TCP connectivity to the SSH port.
@@ -779,44 +897,61 @@ test_connectivity() {
       success "DNS resolved: $HOST"
     else
       warn "DNS lookup failed for '$HOST'. The host may be unreachable, mistyped, or not yet published."
+      CONNECTIVITY_REASON="DNS did not resolve for '$HOST'"
     fi
   elif command -v dscacheutil >/dev/null 2>&1; then
     if dscacheutil -q host -a name "$HOST" 2>/dev/null | grep -q 'ip_address'; then
       success "DNS resolved: $HOST"
     else
       warn "DNS lookup failed for '$HOST'."
+      CONNECTIVITY_REASON="DNS did not resolve for '$HOST'"
     fi
   else
     warn 'No supported DNS utility found; skipping the resolution check.'
   fi
 
   # 2. TCP reachability of the SSH port.
-  local probe='' display="$HOST:$PORT"
+  local display="$HOST:$PORT" rc
   [[ $HOST == *:* ]] && display="[$HOST]:$PORT"
-  if command -v nc >/dev/null 2>&1; then
-    if nc -z -w "$TIMEOUT" "$HOST" "$PORT" >/dev/null 2>&1; then
-      success "TCP port $PORT is reachable on $HOST"
-      return 0
-    fi
-    probe='nc reported the port as closed or unreachable'
-  elif command -v timeout >/dev/null 2>&1; then
-    # bash's /dev/tcp needs a bracketed IPv6 literal. The host is strictly
-    # validated beforehand, so no shell metacharacters can reach this string.
-    local tcp_target=$HOST
-    [[ $HOST == *:* ]] && tcp_target="[$HOST]"
-    if timeout "$TIMEOUT" bash -c "exec 3<>/dev/tcp/${tcp_target}/${PORT}" >/dev/null 2>&1; then
-      success "TCP port $PORT is reachable on $HOST"
-      return 0
-    fi
-    probe='the TCP connection attempt failed or timed out'
-  else
+
+  probe_tcp_port "$HOST" "$PORT" "$TIMEOUT"
+  rc=$?
+
+  if ((rc == 2)); then
     warn 'Neither nc nor timeout is available; skipping the TCP port probe.'
     return 0
   fi
 
-  error "Cannot reach $display ($probe)."
-  printf '  Possible causes: the server is down, a firewall or security group blocks the\n'
-  printf '  port, the port number is wrong, or the hostname does not resolve to this host.\n'
+  case "$TCP_RESULT" in
+    reachable)
+      success "TCP port $PORT is reachable on $HOST"
+      return 0
+      ;;
+    refused)
+      error "Nothing is listening on $display - the host refused the connection."
+      printf '  The host answered, so it is up and reachable, but port %s is closed.\n' "$PORT"
+      printf '  Check that the SSH port on the VPS is right (the sshd "Port" setting)\n'
+      printf '  and that sshd is running.\n'
+      CONNECTIVITY_REASON="port $PORT is closed on the host (connection refused)"
+      ;;
+    filtered)
+      error "The connection to $display timed out - packets are being dropped."
+      printf '  The host did not answer at all. Usual causes:\n'
+      printf '    - a firewall or cloud security group does not allow port %s\n' "$PORT"
+      printf '    - the VPS is down, or its IP address has changed\n'
+      printf '    - your own network or provider blocks the port\n'
+      printf '  Check the firewall on the VPS and in your provider dashboard, and\n'
+      printf '  confirm the port number.\n'
+      CONNECTIVITY_REASON="port $PORT is filtered - the connection timed out"
+      ;;
+    *)
+      error "Cannot reach $display."
+      [[ -z "$TCP_PROBE_OUTPUT" ]] || printf '  %s\n' "$TCP_PROBE_OUTPUT"
+      printf '  The server may be down, the port may be wrong, or a firewall may be\n'
+      printf '  blocking the connection.\n'
+      CONNECTIVITY_REASON="port $PORT could not be reached"
+      ;;
+  esac
   return 1
 }
 
@@ -843,11 +978,30 @@ test_ssh_authentication() {
   printf 'Verifying the host key on first use - compare the fingerprint with the one\n'
   printf 'published by your VPS provider before accepting it.\n\n'
 
+  # Test the configuration this run just wrote, in the same order OpenSSH
+  # reads its files by default.
+  local config="$HOME/.ssh/config" eff_config
+  eff_config=$(build_effective_config "$config")
+
   local rc=0 output
-  output=$(ssh "${args[@]}" "$ALIAS" 'true' 2>&1) || rc=$?
+  output=$(ssh -F "$eff_config" "${args[@]}" "$ALIAS" 'true' 2>&1) || rc=$?
 
   if ((rc == 0)); then
     success 'SSH authentication succeeded and a remote command ran successfully.'
+    return 0
+  fi
+
+  # ssh exits with 255 whenever the connection or the authentication itself
+  # failed. Any other status means the remote command actually ran and
+  # returned that code -- so the login worked even though the command did
+  # not. Some servers (GitHub's, for example) only allow specific commands
+  # and reject anything else; that is not an authentication problem.
+  if ((rc != 255)); then
+    warn "Authenticated successfully, but the test command returned exit code $rc."
+    printf '  The server accepted the login and then refused to run a plain\n'
+    printf '  command. Some servers only allow specific commands, so this is not\n'
+    printf '  an authentication problem.\n'
+    printf '  %s\n' "$output" | sed -n '1,4p' >&2
     return 0
   fi
 
@@ -859,6 +1013,7 @@ test_ssh_authentication() {
     printf '  If you have just reinstalled the VPS, remove the stale key with:\n'
     printf '    ssh-keygen -R %s\n' "$HOST"
     printf '  Never disable StrictHostKeyChecking to work around this.\n'
+    AUTH_REASON="the host key for $HOST is not trusted yet"
   elif printf '%s\n' "$output" | grep -qiE 'permission denied|authentication failed'; then
     error 'Authentication failed: the key or password was rejected by the server.'
     if [[ $AUTH == 'generate' ]]; then
@@ -872,8 +1027,14 @@ test_ssh_authentication() {
         printf '    eval "$(ssh-agent -s)" && ssh-add "%s"\n' "$KEY_PATH"
       fi
     fi
+    AUTH_REASON="the server rejected the $AUTH credentials"
+  elif printf '%s\n' "$output" | grep -qiE 'timed out|connection refused|no route to host|network is unreachable'; then
+    error 'The SSH connection could not be established.'
+    printf '  %s\n' "$output" | sed -n '1,4p' >&2
+    AUTH_REASON="the SSH connection could not be established"
   else
     error 'The SSH test did not complete. Run the verbose command below for details.'
+    AUTH_REASON="the SSH test did not complete"
   fi
 
   printf '  Full diagnostics: ssh -vvv %s\n' "$ALIAS"
@@ -992,11 +1153,18 @@ show_troubleshooting() {
       was reinstalled: ssh-keygen -R HOST
 
   Connection timed out
-      The host is unreachable: check DNS, firewall/security groups, and that the
-      SSH port is correct: nc -vz HOST PORT
+      The host did not answer: packets are being dropped rather than rejected.
+      A firewall or cloud security group is not allowing the port, the VPS is
+      down, or your own network blocks it. Check both ends:
+          nc -vz HOST PORT
 
   Connection refused
-      Nothing is listening on that port. Confirm the sshd port on the VPS.
+      The host answered but nothing is listening on that port. The SSH port
+      is wrong, or sshd is not running. Confirm the sshd "Port" setting.
+
+  Alias resolves but the command is refused
+      The login worked, but the server only allows specific commands. This is
+      what GitHub's SSH server does, and it is not an authentication problem.
 
   Agent refused the key / no identities
       The key is passphrase-protected and not loaded. Unlock it:
@@ -1017,6 +1185,7 @@ ASSUME_YES=0 NO_TEST=0 NO_WRAPPER=0 NONINTERACTIVE=0 INSTALL_WRAPPER=0
 INSTALL_MODE=0 UNINSTALL_MODE=0 INSTALL_DIR="$HOME/.local/bin"
 OS_ID='' OS_FAMILY='' OS_DISTRO='' OS_SUPPORTED='yes' OS_PKG_HINT=''
 SHELL_NAME='sh' SHELL_RAW='unknown'
+CONNECTIVITY_REASON='' AUTH_REASON=''
 
 parse_arguments() {
   local opt val
@@ -1364,7 +1533,13 @@ main() {
     success 'Setup complete and verified. Connect with: ssh '"$ALIAS"
   else
     warn 'The alias is saved, but connectivity/authentication was not fully verified.'
-    printf '  The configuration is usable once the remaining problem is resolved.\n'
+    if [[ -n $CONNECTIVITY_REASON ]]; then
+      printf '  Connectivity: %s\n' "$CONNECTIVITY_REASON"
+    fi
+    if [[ -n $AUTH_REASON ]]; then
+      printf '  Authentication: %s\n' "$AUTH_REASON"
+    fi
+    printf '  The configuration is usable once the problem above is resolved.\n'
   fi
 }
 

@@ -491,12 +491,12 @@ The suite creates a throw-away `HOME` for every test, so **your real
 `~/.ssh/config` is never modified**. It needs no network, no root and no
 live VPS. It exits `0` on success and `1` on any failure.
 
-Latest result on this machine: **176 passed, 0 failed**.
+Latest result on this machine: **179 passed, 0 failed**.
 
 ```bash
 $ ./test-vpslink.sh
 ...
-[1mResult: 176 passed, 0 failed[0m
+[1mResult: 179 passed, 0 failed[0m
 ```
 
 ### Continuous integration
@@ -528,7 +528,7 @@ same branch.
 | 8 | Incorrect hostname | `--host 'bad host'` | Rejected before anything is written |
 | 9 | Invalid port | `--port 99999` | Rejected |
 | 10 | DNS failure | `--host no-such-host.invalid` | "DNS lookup failed" warning |
-| 11 | Connection refused | `--host 127.0.0.1 --port 1` | "Cannot reach" with causes |
+| 11 | Connection refused | `--host 127.0.0.1 --port 1` | "Nothing is listening ... refused" |
 | 12 | Authentication failure | Wrong key for a reachable host | "Authentication failed" + install hint |
 | 13 | Host-key mismatch | Reinstall a test VPS | "Host-key verification failed" + `ssh-keygen -R` |
 | 14 | Missing OpenSSH | Run with `PATH` stripped of `ssh` | Clear "not installed" message |
@@ -558,8 +558,8 @@ sudo cp /tmp/fedora-os-release /tmp/fakeos/etc/os-release
 | `ssh: Could not resolve hostname vps` | The alias is not in the config OpenSSH reads | `ls -l ~/.ssh/config`; confirm you are using the same account; `ssh -G vps` shows what OpenSSH resolved |
 | `Permission denied (publickey)` | The public key is not installed on the VPS, or the remote user is wrong | `ssh-copy-id -i ~/.ssh/id_ed25519.pub -p PORT USER@HOST`; confirm the username |
 | `Host key verification failed` | The stored key does not match the server | Only if you know the VPS was reinstalled: `ssh-keygen -R HOST` |
-| `Connection timed out` | Host unreachable / firewall or security group blocking the port | Check DNS, cloud firewall, `nc -vz HOST PORT` |
-| `Connection refused` | Nothing is listening on that port | Confirm the `sshd` port on the VPS |
+| `The connection to HOST:PORT timed out - packets are being dropped` | A firewall or security group is dropping the port, the VPS is down, or your own network blocks it | Check the VPS firewall and your provider dashboard |
+| `Nothing is listening on HOST:PORT - the host refused the connection` | The host answered but the port is closed | Confirm the `sshd` "Port" setting and that `sshd` is running |
 | `Agent refused the key` / `no identities` | Passphrase-protected key not loaded | `eval "$(ssh-agent -s)" && ssh-add ~/.ssh/id_ed25519` |
 | `Bad configuration option` after editing | Typo in `~/.ssh/config` | `ssh -G vps` to see the parse error |
 | Script exits with "unmanaged" | The alias exists but was not created by this script | Pick option 1 (replace) or 2 (rename) when prompted |
@@ -650,7 +650,7 @@ the contributors.
 .
 ├── vpslink.sh              # the tool (single source of truth)
 ├── run.sh                  # thin wrapper: exec vpslink.sh "$@"
-├── test-vpslink.sh         # isolated regression suite (176 checks)
+├── test-vpslink.sh         # isolated regression suite (179 checks)
 ├── INSTRUCTION.md          # full operating manual
 ├── LICENSE                 # BSD 3-Clause
 ├── .github/workflows/ci.yml
