@@ -1,0 +1,13 @@
+# Editor and OS noise
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# SSH config artefacts if the tool is ever run inside this directory
+config.bak.*
+config.tmp.*
+*.pub
+*.pem
+*.key
