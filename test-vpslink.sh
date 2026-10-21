@@ -54,9 +54,20 @@ assert_not_contains() { # assert_not_contains <desc> <haystack> <needle>
   if [[ "$2" != *"$3"* ]]; then ok "$1"; else bad "$1" "did not expect: $3"; fi
 }
 
+# Print a file's permission bits as three octal digits, whatever the
+# platform's stat reports: Linux "600", macOS/BSD "0600" or "100600".
+file_mode() {
+  local m
+  m=$(stat -c '%a' "$1" 2>/dev/null) || m=$(stat -f '%Lp' "$1" 2>/dev/null) || m=''
+  case "$m" in
+    ''|*[!0-7]*) printf '?' ;;
+    *) printf '%o' $(( 0$m & 0777 )) ;;
+  esac
+}
+
 assert_file_mode() { # assert_file_mode <desc> <file> <expected-octal>
   local actual
-  actual=$(stat -c '%a' "$2" 2>/dev/null || stat -f '%Lp' "$2" 2>/dev/null || echo '?')
+  actual=$(file_mode "$2")
   if [[ "$actual" == "$3" ]]; then ok "$1"; else bad "$1" "expected mode $3, got $actual"; fi
 }
 
