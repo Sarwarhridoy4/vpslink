@@ -62,8 +62,10 @@ jobs:
               cat /tmp/suite.log
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
-            # Surface each failed check as an annotation on the run.
-            grep -E '^[[:space:]]+FAIL' /tmp/suite.log | sed 's/^[[:space:]]*FAIL/::error::/' || true
+            # File-anchored annotations show up inline on the changed file.
+            grep -E '^[[:space:]]+FAIL' /tmp/suite.log | while IFS= read -r line; do
+              echo "::error file=test-vpslink.sh,line=1::${line}"
+            done
             exit 1
           fi
 
@@ -94,7 +96,9 @@ jobs:
               cat /tmp/suite.log
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
-            # Surface each failed check as an annotation on the run.
-            grep -E '^[[:space:]]+FAIL' /tmp/suite.log | sed 's/^[[:space:]]*FAIL/::error::/' || true
+            # File-anchored annotations show up inline on the changed file.
+            grep -E '^[[:space:]]+FAIL' /tmp/suite.log | while IFS= read -r line; do
+              echo "::error file=test-vpslink.sh,line=1::${line}"
+            done
             exit 1
           fi
