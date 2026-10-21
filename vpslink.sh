@@ -201,7 +201,14 @@ classify_platform() {
       ;;
   esac
 
-  if [[ "$OS_ID" == 'darwin' || "$OS_FAMILY" == *darwin* ]]; then
+  # Compare case-insensitively: detect_os reports "macOS", but the value may
+  # also arrive as "macos" or "darwin" from a caller. ${var,,} needs bash 4,
+  # so tr is used instead to stay compatible with bash 3.2 on macOS.
+  local os_lc family_lc
+  os_lc=$(printf '%s' "$OS_ID" | tr '[:upper:]' '[:lower:]')
+  family_lc=$(printf '%s' "$OS_FAMILY" | tr '[:upper:]' '[:lower:]')
+  if [[ "$os_lc" == 'macos' || "$os_lc" == 'darwin' ||
+        "$family_lc" == *darwin* || "$family_lc" == *macos* ]]; then
     OS_SUPPORTED='yes'
     OS_PKG_HINT='macOS         : xcode-select --install'
   fi
@@ -1116,5 +1123,9 @@ main() {
   fi
 }
 
-parse_arguments "$@"
-main
+# Running this file executes the tool. Sourcing it (BASH_SOURCE[0] != $0)
+# only defines the functions, which is what the unit tests rely on.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  parse_arguments "$@"
+  main
+fi

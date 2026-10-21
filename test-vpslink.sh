@@ -42,6 +42,10 @@ assert_eq() { # assert_eq <desc> <expected> <actual>
   if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1" "expected '$2', got '$3'"; fi
 }
 
+assert_ne() { # assert_ne <desc> <not-expected> <actual>
+  if [[ "$2" != "$3" ]]; then ok "$1"; else bad "$1" "did not expect '$3'"; fi
+}
+
 assert_contains() { # assert_contains <desc> <haystack> <needle>
   if [[ "$2" == *"$3"* ]]; then ok "$1"; else bad "$1" "expected to find: $3"; fi
 }
@@ -62,6 +66,15 @@ assert_file_absent() { # assert_file_absent <desc> <file>
 
 assert_file_exists() { # assert_file_exists <desc> <file>
   if [[ -e "$2" ]]; then ok "$1"; else bad "$1" "file should exist: $2"; fi
+}
+
+# Portable file checksum: sha256sum on Linux, shasum on macOS.
+file_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
 }
 
 section() { printf '\n\033[1m%s\033[0m\n' "$1"; }
@@ -341,7 +354,13 @@ setup_home
 # Port 1 on localhost is closed -> "connection refused".
 out=$("$SUT" --alias vps --host 127.0.0.1 --user u --port 1 --auth password --yes 2>&1)
 assert_contains 'closed port is reported' "$out" 'Cannot reach'
-assert_contains 'refused/closed wording is used' "$out" 'closed or unreachable'
+# The exact wording depends on which probe tool is available (nc on most
+# systems, /dev/tcp+timeout otherwise, neither on a bare macOS).
+if [[ "$out" == *'closed or unreachable'* || "$out" == *'failed or timed out'* ]]; then
+  ok 'the probe failure is described'
+else
+  bad 'the probe failure is described' "$out"
+fi
 
 # A non-resolving name -> DNS warning.
 out=$("$SUT" --alias vps --host no-such-host.invalid --user u --port 22 --auth password --yes 2>&1)
@@ -401,13 +420,13 @@ section '14. Existing keys are never overwritten silently'
 # ===========================================================================
 setup_home
 ssh-keygen -q -t ed25519 -N '' -f "$HOME/.ssh/keepme" -C 'original' </dev/null
-before_sum=$(sha256sum "$HOME/.ssh/keepme" | awk '{print $1}')
+before_sum=$(file_sha256 "$HOME/.ssh/keepme")
 # Answer order: alias, host, user, port, auth=2, key path, key type, keepalive,
 #               timeout, identities, wrapper, confirm, then "n" at the
 #               overwrite-existing-key prompt.
 printf 'vps\nsrv.example.com\nu\n22\n2\n%s\ned25519\n60\n10\ny\nn\ny\nn\n' "$HOME/.ssh/keepme" \
   | "$SUT" --no-test >/dev/null 2>&1
-after_sum=$(sha256sum "$HOME/.ssh/keepme" | awk '{print $1}')
+after_sum=$(file_sha256 "$HOME/.ssh/keepme")
 assert_eq 'declining the overwrite leaves the key intact' "$before_sum" "$after_sum"
 teardown_home
 
@@ -460,7 +479,76 @@ assert_contains 'existing wrapper is not overwritten' "$(cat "$HOME/.local/bin/v
 teardown_home
 
 # ===========================================================================
-section '18. The real user SSH config was not touched'
+section '19. Unit tests of the sourced functions'
+# ===========================================================================
+# The tool only runs when executed, so sourcing it exposes the functions
+# for direct testing. Sourcing also applies the tool's strict mode, IFS and
+# umask to this shell, so the harness settings are restored afterwards.
+_saved_umask=$(umask)
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/vpslink.sh"
+set +e
+IFS=$' \t\n'
+umask "$_saved_umask"
+
+# classify_platform must recognise macOS regardless of the capitalisation
+# used by detect_os ("macOS" vs "macos" vs "darwin").
+for id in 'macOS' 'macos' 'darwin' 'Darwin' 'MACOS'; do
+  OS_ID=$id
+  OS_FAMILY=''
+  OS_SUPPORTED=''
+  OS_PKG_HINT=''
+  classify_platform
+  if [[ $OS_SUPPORTED == 'yes' ]]; then
+    ok "classify_platform recognises '$id' as supported"
+  else
+    bad "classify_platform recognises '$id' as supported" "got '$OS_SUPPORTED'"
+  fi
+done
+
+# A recognised Linux family must be supported too.
+OS_ID='ubuntu'; OS_FAMILY='debian'; OS_SUPPORTED=''; OS_PKG_HINT=''
+classify_platform
+assert_eq 'classify_platform recognises ubuntu/debian' 'yes' "$OS_SUPPORTED"
+assert_contains 'a package manager hint is provided' "$OS_PKG_HINT" 'apt'
+
+# An unknown distribution is flagged as partial but must not be fatal.
+OS_ID='plan9'; OS_FAMILY=''
+OS_SUPPORTED=''; OS_PKG_HINT=''
+classify_platform
+assert_eq 'an unknown distribution is reported as partial' 'partial' "$OS_SUPPORTED"
+assert_eq 'classify_platform does not alter the OS id' 'plan9' "$OS_ID"
+assert_eq 'classify_platform does not alter the OS family' '' "$OS_FAMILY"
+
+# Input validators.
+if is_valid_alias 'vps'; then ok 'is_valid_alias accepts "vps"'; else bad 'is_valid_alias accepts "vps"'; fi
+if is_valid_alias '-bad'; then bad 'is_valid_alias rejects a leading dash'; else ok 'is_valid_alias rejects a leading dash'; fi
+if is_valid_alias 'a b'; then bad 'is_valid_alias rejects spaces'; else ok 'is_valid_alias rejects spaces'; fi
+if is_valid_alias 'a*b'; then bad 'is_valid_alias rejects glob characters'; else ok 'is_valid_alias rejects glob characters'; fi
+if is_valid_port 22; then ok 'is_valid_port accepts 22'; else bad 'is_valid_port accepts 22'; fi
+if is_valid_port 0; then bad 'is_valid_port rejects 0'; else ok 'is_valid_port rejects 0'; fi
+if is_valid_port 65536; then bad 'is_valid_port rejects 65536'; else ok 'is_valid_port rejects 65536'; fi
+if is_valid_port '999abc'; then bad 'is_valid_port rejects non-numeric input'; else ok 'is_valid_port rejects non-numeric input'; fi
+if is_valid_user 'hemayet'; then ok 'is_valid_user accepts "hemayet"'; else bad 'is_valid_user accepts "hemayet"'; fi
+if is_valid_user 'bad user'; then bad 'is_valid_user rejects spaces'; else ok 'is_valid_user rejects spaces'; fi
+if is_valid_host 'srv.example.com'; then ok 'is_valid_host accepts a FQDN'; else bad 'is_valid_host accepts a FQDN'; fi
+if is_valid_host '192.0.2.10'; then ok 'is_valid_host accepts an IPv4 literal'; else bad 'is_valid_host accepts an IPv4 literal'; fi
+if is_valid_host '2001:db8::1'; then ok 'is_valid_host accepts an IPv6 literal'; else bad 'is_valid_host accepts an IPv6 literal'; fi
+if is_valid_host '256.1.1.1'; then bad 'is_valid_host rejects an out-of-range octet'; else ok 'is_valid_host rejects an out-of-range octet'; fi
+if is_valid_host 'srv..example.com'; then bad 'is_valid_host rejects an empty label'; else ok 'is_valid_host rejects an empty label'; fi
+if is_valid_host '-srv.example.com'; then bad 'is_valid_host rejects a leading dash'; else ok 'is_valid_host rejects a leading dash'; fi
+if is_valid_host 'srv.example.com;rm'; then bad 'is_valid_host rejects a semicolon'; else ok 'is_valid_host rejects a semicolon'; fi
+
+# os_release_get must parse rather than execute the file.
+os_release_get ID /etc/os-release >/dev/null 2>&1
+assert_ne 'os_release_get finds an ID in /etc/os-release' 'not-found' "$?"
+
+# The marker constants must be the ones written into the config.
+assert_eq 'the managed-block prefix is "vpslink"' 'vpslink' "$MARKER_PREFIX"
+assert_eq 'the legacy prefix is still recognised' 'vps-login-setup' "$LEGACY_MARKER_PREFIX"
+
+# ===========================================================================
+section '20. The real user SSH config was not touched'
 # ===========================================================================
 real_config="$ORIG_HOME/.ssh/config"
 if [[ -f "$real_config" ]]; then

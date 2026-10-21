@@ -1,5 +1,8 @@
 # vpslink
 
+[![CI](https://github.com/Sarwarhridoy4/vpslink/actions/workflows/ci.yml/badge.svg)](https://github.com/Sarwarhridoy4/vpslink/actions/workflows/ci.yml)
+[![License: BSD 3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
+
 A production-quality Bash tool that turns a tedious SSH command into one word.
 
 ```bash
@@ -15,6 +18,10 @@ actually works before it reports success.
 yours to choose (`vps`, `production`, `staging`, …). Renaming the tool never
 affects the aliases it has already written.
 
+> **Full operating manual:** see **[INSTRUCTION.md](INSTRUCTION.md)** for the
+> complete walkthrough of every prompt, every command-line option, the exit
+> codes, backup and recovery procedures, and the scripted/CI usage patterns.
+
 ---
 
 ## Contents
@@ -29,7 +36,8 @@ affects the aliases it has already written.
 8. [Testing](#8-testing)
 9. [Troubleshooting guide](#9-troubleshooting-guide)
 10. [Security limitations and assumptions](#10-security-limitations-and-assumptions)
-11. [File layout](#11-file-layout)
+11. [License](#11-license)
+12. [File layout](#12-file-layout)
 
 ---
 
@@ -422,13 +430,28 @@ The suite creates a throw-away `HOME` for every test, so **your real
 `~/.ssh/config` is never modified**. It needs no network, no root and no
 live VPS. It exits `0` on success and `1` on any failure.
 
-Latest result on this machine: **104 passed, 0 failed**.
+Latest result on this machine: **134 passed, 0 failed**.
 
 ```bash
 $ ./test-vpslink.sh
 ...
-[1mResult: 104 passed, 0 failed[0m
+[1mResult: 134 passed, 0 failed[0m
 ```
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request to `main`:
+
+| Job | Runs on | What it does |
+|---|---|---|
+| `lint` | `ubuntu-latest` | ShellCheck at `-S style` plus `bash -n` on all three scripts |
+| `test` | `ubuntu-latest`, `ubuntu-22.04` | The full regression suite |
+| `macos` | `macos-latest` | ShellCheck plus the full regression suite |
+
+The workflow depends on nothing beyond `actions/checkout` and the runners'
+own package managers — no third-party lint actions. It requests
+`contents: read` and no other permissions, and cancels superseded runs on the
+same branch.
 
 ### Manual test procedure
 
@@ -546,13 +569,30 @@ getent ahosts srv.example.com   # does DNS resolve?
 
 ---
 
-## 11. File layout
+## 11. License
+
+Released under the **BSD 3-Clause License** — see [`LICENSE`](LICENSE).
+
+Copyright (c) 2026 Sarwarhridoy4.
+
+In short: you may use, modify and redistribute it, including commercially,
+provided you keep the copyright notice, the conditions and the disclaimer,
+and do not use the author's name to endorse your own product. There is no
+copyleft obligation, and the licence includes an explicit patent grant from
+the contributors.
+
+---
+
+## 12. File layout
 
 ```
 .
 ├── vpslink.sh              # the tool (single source of truth)
 ├── run.sh                  # thin wrapper: exec vpslink.sh "$@"
-├── test-vpslink.sh         # isolated regression suite (104 checks)
+├── test-vpslink.sh         # isolated regression suite (134 checks)
+├── INSTRUCTION.md          # full operating manual
+├── LICENSE                 # BSD 3-Clause
+├── .github/workflows/ci.yml
 └── README.md
 ```
 

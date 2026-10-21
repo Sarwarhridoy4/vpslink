@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# The workflow only needs to read the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends shellcheck
+          fi
+          shellcheck --version
+
+      - name: ShellCheck
+        run: shellcheck -S style vpslink.sh run.sh test-vpslink.sh
+
+      - name: Bash syntax check
+        run: |
+          for f in vpslink.sh run.sh test-vpslink.sh; do
+            echo "checking $f"
+            bash -n "$f"
+          done
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-22.04]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run the regression suite
+        run: ./test-vpslink.sh
+
+  macos:
+    name: Test (macOS)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            brew install shellcheck
+          fi
+          shellcheck --version
+
+      - name: ShellCheck
+        run: shellcheck -S style vpslink.sh run.sh test-vpslink.sh
+
+      - name: Run the regression suite
+        run: ./test-vpslink.sh
