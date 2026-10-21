@@ -62,25 +62,78 @@ chmod +x vpslink.sh
 ./run.sh --alias prod --host srv.example.com --user deploy --port 999 --auth key --yes
 ```
 
-### Option B — install as a command
+### Option B — install as a command (any shell)
 
 ```bash
+./vpslink.sh --install
+```
+
+This does the whole job in one step:
+
+1. Detects your login shell from `$SHELL` (falling back to the parent
+   process).
+2. Copies the tool to `~/.local/bin/vpslink` (mode `755`).
+3. Writes the correct `PATH` line for that shell into its startup file.
+4. Prints the line you need to activate it in the current terminal.
+
+The startup file is edited between markers, so running `--install` again
+replaces the block instead of adding a second one, and any other content in
+the file is left untouched:
+
+```bash
+# >>> vpslink >>>
+export PATH="/home/you/.local/bin:$PATH"
+# <<< vpslink <<<
+```
+
+It shows you exactly what it will change and asks for confirmation first.
+Pass `--yes` to skip the prompt.
+
+To install somewhere else:
+
+```bash
+./vpslink.sh --install --install-dir ~/bin
+```
+
+To remove it again:
+
+```bash
+vpslink --uninstall
+```
+
+This deletes the installed copy and removes the marked block from your
+startup file. Your other `PATH` entries are untouched.
+
+### Shell support
+
+| Shell | Startup file | `PATH` line added |
+|---|---|---|
+| Bash | `~/.bashrc` | `export PATH="<dir>:$PATH"` |
+| Zsh | `~/.zshrc` | `export PATH="<dir>:$PATH"` |
+| Fish | `~/.config/fish/config.fish` | `fish_add_path "<dir>"` |
+| csh / tcsh | `~/.cshrc` | `setenv PATH "<dir>":$PATH` |
+| Ksh (ksh93, mksh) | `~/.kshrc` | `export PATH="<dir>:$PATH"` |
+| sh / dash / ash | `~/.profile` | `export PATH="<dir>:$PATH"` |
+| PowerShell | `~/.config/powershell/Microsoft.PowerShell_profile.ps1` | `$env:PATH = "<dir>" + [System.IO.Path]::PathSeparator + $env:PATH` |
+| Elvish | `~/.elvish/rc.elv` | `set-env E:PATH (put $E:PATH \| append <dir>)` |
+| Nushell | `~/.config/nushell/config.nu` | `$env.PATH = ($env.PATH \| prepend "<dir>")` |
+| Xonsh | `~/.xonshrc` | `import os; os.environ['PATH'] = '<dir>' + os.pathsep + os.environ['PATH']` |
+
+Any other shell falls back to the POSIX `~/.profile` with a plain `export`.
+
+If you use a non-standard startup file (for example `~/.zshenv`, or a
+`ZDOTDIR` override), run the tool from that shell so `$SHELL` matches, or
+add the line by hand — the tool prints the exact line for your shell.
+
+### Option C — install by hand
+
+```bash
+# 1. Copy the script somewhere permanent, under the name you want to type
 install -m 0755 vpslink.sh ~/.local/bin/vpslink
-```
 
-Make sure `~/.local/bin` is on your `PATH`:
+# 2. Add the directory to your PATH using the line from the table above
 
-```bash
-# bash / zsh
-export PATH="$HOME/.local/bin:$PATH"
-
-# fish
-fish_add_path ~/.local/bin
-```
-
-Then run it from anywhere:
-
-```bash
+# 3. Run it from anywhere
 vpslink
 ```
 
@@ -290,6 +343,9 @@ Answer `y` to run `ssh-copy-id` for you. See
 --no-wrapper        Do not offer the optional ~/.local/bin wrapper
 --wrapper           Always install the ~/.local/bin wrapper
 --yes               Skip the interactive confirmation
+--install           Install vpslink on the PATH for your shell and exit
+--install-dir DIR   Target directory for --install (default ~/.local/bin)
+--uninstall         Remove vpslink and its PATH entry, then exit
 --version           Print the script version
 --help, -h          Show this help
 ```

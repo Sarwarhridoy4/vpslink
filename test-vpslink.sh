@@ -96,6 +96,16 @@ file_sha256() {
   fi
 }
 
+# Snapshot the real SSH config so the suite can prove it did not touch it.
+# The user may legitimately be using vpslink on their own machine, so the
+# check is "unchanged by this run", not "contains no vpslink block".
+REAL_CONFIG="$ORIG_HOME/.ssh/config"
+if [[ -f $REAL_CONFIG ]]; then
+  REAL_CONFIG_BEFORE=$(file_sha256 "$REAL_CONFIG")
+else
+  REAL_CONFIG_BEFORE='absent'
+fi
+
 # Portability lint for the "option after an operand" hazard.
 #
 # BSD and macOS use getopt, which stops at the first non-option argument.
@@ -621,18 +631,77 @@ for f in "$SCRIPT_DIR/vpslink.sh" "$SCRIPT_DIR/run.sh" "$SCRIPT_DIR/test-vpslink
 done
 
 # ===========================================================================
-section '20. The real user SSH config was not touched'
+section '20. Installation and PATH setup'
 # ===========================================================================
-real_config="$ORIG_HOME/.ssh/config"
-if [[ -f "$real_config" ]]; then
-  if grep -q 'vpslink' "$real_config" 2>/dev/null; then
-    bad 'the real ~/.ssh/config has no vpslink block'
-  else
-    ok 'the real ~/.ssh/config has no vpslink block'
-  fi
+setup_home
+out=$(env SHELL=/bin/bash "$SUT" --install --yes --install-dir "$HOME/bin" 2>&1); rc=$?
+assert_eq '--install succeeds' 0 "$rc"
+assert_file_exists 'the command is installed' "$HOME/bin/vpslink"
+assert_file_mode 'the installed command is executable' "$HOME/bin/vpslink" '755'
+assert_contains 'the PATH block marker is written' "$(cat "$HOME/.bashrc")" '# >>> vpslink >>>'
+assert_contains 'the PATH export is written' "$(cat "$HOME/.bashrc")" 'export PATH='
+assert_contains 'the closing marker is written' "$(cat "$HOME/.bashrc")" '# <<< vpslink <<<'
+assert_file_mode 'a newly created rc file is readable' "$HOME/.bashrc" '644'
+
+# Re-running must not duplicate the block.
+env SHELL=/bin/bash "$SUT" --install --yes --install-dir "$HOME/bin" >/dev/null 2>&1
+assert_eq 'the PATH block is not duplicated' 1 "$(grep -c '^# >>> vpslink >>>$' "$HOME/.bashrc")"
+
+# An existing startup file keeps its content and permissions.
+setup_home
+printf '# my bashrc\nexport EDITOR=vim\n' > "$HOME/.bashrc"
+chmod 600 "$HOME/.bashrc"
+env SHELL=/bin/bash "$SUT" --install --yes --install-dir "$HOME/bin" >/dev/null 2>&1
+assert_contains 'existing rc content is preserved' "$(cat "$HOME/.bashrc")" 'export EDITOR=vim'
+assert_file_mode 'an existing rc file keeps its mode' "$HOME/.bashrc" '600'
+
+# Uninstall removes both the command and the PATH block.
+env SHELL=/bin/bash "$SUT" --uninstall --install-dir "$HOME/bin" >/dev/null 2>&1
+assert_file_absent 'the installed command is removed' "$HOME/bin/vpslink"
+assert_eq 'the PATH block is removed' 0 "$(grep -c 'vpslink' "$HOME/.bashrc")"
+assert_contains 'the original rc content survives uninstall' "$(cat "$HOME/.bashrc")" 'export EDITOR=vim'
+teardown_home
+
+# The startup file and PATH syntax must match the detected shell.
+SHELL_NAME='bash';      assert_eq 'bash uses .bashrc' "$HOME/.bashrc" "$(shell_rc_file)"
+SHELL_NAME='zsh';       assert_eq 'zsh uses .zshrc' "$HOME/.zshrc" "$(shell_rc_file)"
+SHELL_NAME='fish';      assert_eq 'fish uses config.fish' "$HOME/.config/fish/config.fish" "$(shell_rc_file)"
+SHELL_NAME='csh';       assert_eq 'csh uses .cshrc' "$HOME/.cshrc" "$(shell_rc_file)"
+SHELL_NAME='ksh';       assert_eq 'ksh uses .kshrc' "$HOME/.kshrc" "$(shell_rc_file)"
+SHELL_NAME='sh';        assert_eq 'sh uses .profile' "$HOME/.profile" "$(shell_rc_file)"
+SHELL_NAME='powershell'; assert_eq 'powershell uses a profile' "$HOME/.config/powershell/Microsoft.PowerShell_profile.ps1" "$(shell_rc_file)"
+SHELL_NAME='elvish';    assert_eq 'elvish uses rc.elv' "$HOME/.elvish/rc.elv" "$(shell_rc_file)"
+SHELL_NAME='nushell';   assert_eq 'nushell uses config.nu' "$HOME/.config/nushell/config.nu" "$(shell_rc_file)"
+SHELL_NAME='xonsh';     assert_eq 'xonsh uses .xonshrc' "$HOME/.xonshrc" "$(shell_rc_file)"
+
+SHELL_NAME='bash';      assert_contains 'bash uses an export' "$(shell_path_line /opt/bin)" 'export PATH='
+SHELL_NAME='fish';      assert_contains 'fish uses fish_add_path' "$(shell_path_line /opt/bin)" 'fish_add_path'
+SHELL_NAME='csh';       assert_contains 'csh uses setenv' "$(shell_path_line /opt/bin)" 'setenv PATH'
+SHELL_NAME='powershell'; assert_contains 'powershell uses PathSeparator' "$(shell_path_line /opt/bin)" 'PathSeparator'
+SHELL_NAME='elvish';    assert_contains 'elvish uses set-env' "$(shell_path_line /opt/bin)" 'set-env E:PATH'
+SHELL_NAME='nushell';   assert_contains 'nushell uses prepend' "$(shell_path_line /opt/bin)" 'prepend'
+SHELL_NAME='xonsh';     assert_contains 'xonsh uses os.environ' "$(shell_path_line /opt/bin)" 'os.environ'
+SHELL_NAME='ksh';       assert_contains 'ksh uses an export' "$(shell_path_line /opt/bin)" 'export PATH='
+SHELL_NAME='sh';        assert_contains 'sh uses an export' "$(shell_path_line /opt/bin)" 'export PATH='
+assert_eq 'the shell name is left set for the caller' 'sh' "$SHELL_NAME"
+
+# Shell name normalisation.
+assert_eq 'bash is normalised' 'bash' "$(normalise_shell /bin/bash)"
+assert_eq 'tcsh is normalised to csh' 'csh' "$(normalise_shell /usr/bin/tcsh)"
+assert_eq 'dash is normalised to sh' 'sh' "$(normalise_shell /bin/dash)"
+assert_eq 'an unknown shell falls back to sh' 'sh' "$(normalise_shell /weird/thing)"
+assert_eq 'pwsh is normalised to powershell' 'powershell' "$(normalise_shell /usr/local/bin/pwsh)"
+assert_eq 'nu is normalised to nushell' 'nushell' "$(normalise_shell /opt/homebrew/bin/nu)"
+
+# ===========================================================================
+section '21. The real user SSH config was not touched'
+# ===========================================================================
+if [[ -f $REAL_CONFIG ]]; then
+  REAL_CONFIG_AFTER=$(file_sha256 "$REAL_CONFIG")
 else
-  ok 'the real ~/.ssh/config does not exist (untouched)'
+  REAL_CONFIG_AFTER='absent'
 fi
+assert_eq 'the real ~/.ssh/config is unchanged by the suite' "$REAL_CONFIG_BEFORE" "$REAL_CONFIG_AFTER"
 
 # ===========================================================================
 printf '\n%sResult: %d passed, %d failed%s\n' "$C_BOLD" "$PASS" "$FAIL" "$C_OFF"

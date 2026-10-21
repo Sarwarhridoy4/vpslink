@@ -69,9 +69,19 @@ Options:
   --no-identities-only  Allow the SSH agent to offer other identities
   --no-test           Skip connectivity and authentication tests
   --no-wrapper        Do not offer the optional ~/.local/bin wrapper
+  --wrapper           Always install the ~/.local/bin wrapper
   --yes               Skip the interactive confirmation
+  --install           Install vpslink on the PATH for your shell and exit
+  --install-dir DIR   Target directory for --install (default ~/.local/bin)
+  --uninstall         Remove vpslink and its PATH entry, then exit
   --version           Print the script version
   --help, -h          Show this help
+
+Installation:
+  --install copies the script into ~/.local/bin (or --install-dir) and adds
+  that directory to the PATH in your shell's startup file. Bash, Zsh, Fish,
+  csh/tcsh, Ksh, POSIX sh, PowerShell, Elvish, Nushell and Xonsh are
+  supported; the matching syntax is used for each of them.
 
 Safety:
   * Passwords are never accepted as arguments and are never stored.
@@ -1004,7 +1014,9 @@ TROUBLE
 ALIAS='' HOST='' REMOTE_USER='' PORT='22' AUTH='' KEY_PATH='' KEY_TYPE='ed25519'
 KEEPALIVE='60' TIMEOUT='10' IDENTITIES_ONLY='yes'
 ASSUME_YES=0 NO_TEST=0 NO_WRAPPER=0 NONINTERACTIVE=0 INSTALL_WRAPPER=0
+INSTALL_MODE=0 UNINSTALL_MODE=0 INSTALL_DIR="$HOME/.local/bin"
 OS_ID='' OS_FAMILY='' OS_DISTRO='' OS_SUPPORTED='yes' OS_PKG_HINT=''
+SHELL_NAME='sh' SHELL_RAW='unknown'
 
 parse_arguments() {
   local opt val
@@ -1030,12 +1042,245 @@ parse_arguments() {
       --no-test)     NO_TEST=1; shift ;;
       --no-wrapper)  NO_WRAPPER=1; INSTALL_WRAPPER=0; shift ;;
       --wrapper)     INSTALL_WRAPPER=1; shift ;;
+      --install)     INSTALL_MODE=1; shift ;;
+      --uninstall)   UNINSTALL_MODE=1; shift ;;
+      --install-dir)
+        (($# >= 2)) || die 'Missing value for --install-dir'
+        INSTALL_DIR=$2; shift 2 ;;
       --yes)         ASSUME_YES=1; shift ;;
       --version)     printf '%s %s\n' "$SCRIPT_NAME" "$SCRIPT_VERSION"; exit 0 ;;
       --help|-h)     usage; exit 0 ;;
       *) die "Unknown option: $1 (use --help)" ;;
     esac
   done
+
+  if ((INSTALL_MODE)) && ((UNINSTALL_MODE)); then
+    die '--install and --uninstall cannot be used together.'
+  fi
+  if ((INSTALL_MODE)); then
+    trap cleanup EXIT
+    install_command
+    exit 0
+  fi
+  if ((UNINSTALL_MODE)); then
+    trap cleanup EXIT
+    uninstall_command
+    exit 0
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Installation: put vpslink on the PATH for any shell
+# ---------------------------------------------------------------------------
+readonly RC_BEGIN='# >>> vpslink >>>'
+readonly RC_END='# <<< vpslink <<<'
+
+# Reduce a shell name to a family we know how to configure.
+normalise_shell() {
+  case "${1##*/}" in
+    bash)                   printf 'bash' ;;
+    zsh)                    printf 'zsh' ;;
+    fish)                   printf 'fish' ;;
+    csh|tcsh)               printf 'csh' ;;
+    ksh|ksh93|ksh94|mksh)   printf 'ksh' ;;
+    sh|dash|ash|busybox)    printf 'sh' ;;
+    pwsh|powershell)        printf 'powershell' ;;
+    elvish)                 printf 'elvish' ;;
+    nu|nushell)             printf 'nushell' ;;
+    xonsh)                  printf 'xonsh' ;;
+    *)                      printf 'sh' ;;
+  esac
+}
+
+# Which shell the user actually starts. $SHELL is the login shell, which is
+# the right target for an rc file; the parent process is a fallback.
+detect_shell() {
+  local raw=${SHELL:-}
+  if [[ -z $raw ]]; then
+    raw=$(ps -p "$PPID" -o comm= 2>/dev/null | head -n1 || true)
+  fi
+  SHELL_RAW=${raw:-unknown}
+  SHELL_NAME=$(normalise_shell "${raw:-sh}")
+}
+
+# The startup file that this shell reads.
+shell_rc_file() {
+  case "$SHELL_NAME" in
+    bash)        printf '%s' "$HOME/.bashrc" ;;
+    zsh)         printf '%s' "$HOME/.zshrc" ;;
+    fish)        printf '%s' "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish" ;;
+    csh)         printf '%s' "$HOME/.cshrc" ;;
+    ksh)         printf '%s' "$HOME/.kshrc" ;;
+    powershell)  printf '%s' "${XDG_CONFIG_HOME:-$HOME/.config}/powershell/Microsoft.PowerShell_profile.ps1" ;;
+    elvish)      printf '%s' "$HOME/.elvish/rc.elv" ;;
+    nushell)     printf '%s' "${XDG_CONFIG_HOME:-$HOME/.config}/nushell/config.nu" ;;
+    xonsh)       printf '%s' "$HOME/.xonshrc" ;;
+    *)           printf '%s' "$HOME/.profile" ;;
+  esac
+}
+
+# The line that adds a directory to the PATH, in this shell's syntax.
+# The dollar signs are escaped so they are written literally for the
+# user's shell rather than expanded here.
+shell_path_line() {
+  local dir=$1
+  case "$SHELL_NAME" in
+    fish)       printf 'fish_add_path "%s"' "$dir" ;;
+    csh)        printf "setenv PATH \"%s\":\$PATH" "$dir" ;;
+    powershell) printf "\$env:PATH = \"%s\" + [System.IO.Path]::PathSeparator + \$env:PATH" "$dir" ;;
+    elvish)     printf "set-env E:PATH (put \$E:PATH | append %s)" "$dir" ;;
+    nushell)    printf "\$env.PATH = (\$env.PATH | prepend \"%s\")" "$dir" ;;
+    xonsh)      printf "import os; os.environ['PATH'] = '%s' + os.pathsep + os.environ['PATH']" "$dir" ;;
+    *)          printf "export PATH=\"%s:\$PATH\"" "$dir" ;;
+  esac
+}
+
+# The line that adds a directory to the PATH in the current session.
+shell_path_now_line() {
+  local dir=$1
+  case "$SHELL_NAME" in
+    fish)       printf "set -gx PATH \"%s\" \$PATH" "$dir" ;;
+    csh)        printf "setenv PATH \"%s\":\$PATH" "$dir" ;;
+    powershell) printf "\$env:PATH = \"%s\" + [System.IO.Path]::PathSeparator + \$env:PATH" "$dir" ;;
+    elvish)     printf "set-env E:PATH (put \$E:PATH | append %s)" "$dir" ;;
+    nushell)    printf "\$env.PATH = (\$env.PATH | prepend \"%s\")" "$dir" ;;
+    xonsh)      printf "import os; os.environ['PATH'] = '%s' + os.pathsep + os.environ['PATH']" "$dir" ;;
+    *)          printf "export PATH=\"%s:\$PATH\"" "$dir" ;;
+  esac
+}
+
+# Replace the marked block in an rc file, or append it if absent.
+# The file is rewritten in place so its permissions are preserved.
+rc_apply_block() {
+  local rc=$1 line=$2 tmp dir existed=0
+  dir=$(dirname -- "$rc")
+  [[ -d $dir ]] || mkdir -p -- "$dir"
+  [[ -f $rc ]] && existed=1
+
+  tmp=$(mktemp "${rc}.vpslink.XXXXXX")
+  track_tmp "$tmp"
+
+  if ((existed)); then
+    awk -v b="$RC_BEGIN" -v e="$RC_END" '
+      $0 == b { skip = 1; next }
+      $0 == e { skip = 0; next }
+      !skip    { print }
+    ' "$rc" > "$tmp"
+  else
+    : > "$tmp"
+  fi
+
+  {
+    printf '%s\n' "$RC_BEGIN"
+    printf '%s\n' "$line"
+    printf '%s\n' "$RC_END"
+  } >> "$tmp"
+
+  cat -- "$tmp" > "$rc"
+  rm -f -- "$tmp"
+
+  # A file we created ourselves should look like the user's other dotfiles.
+  if ((existed == 0)); then
+    chmod -- 644 "$rc" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# Remove the marked block from an rc file.
+rc_remove_block() {
+  local rc=$1 tmp
+  [[ -f $rc ]] || return 0
+  tmp=$(mktemp "${rc}.vpslink.XXXXXX")
+  track_tmp "$tmp"
+  awk -v b="$RC_BEGIN" -v e="$RC_END" '
+    $0 == b { skip = 1; next }
+    $0 == e { skip = 0; next }
+    !skip    { print }
+  ' "$rc" > "$tmp"
+  cat -- "$tmp" > "$rc"
+  rm -f -- "$tmp"
+  return 0
+}
+
+# The absolute path of the running script.
+resolve_script_path() {
+  local src=${BASH_SOURCE[0]}
+  [[ $src == /* ]] || src="$PWD/$src"
+  printf '%s' "$src"
+}
+
+install_command() {
+  local bindir=$INSTALL_DIR
+  local target rc src
+
+  detect_shell
+  target="$bindir/vpslink"
+  rc=$(shell_rc_file)
+  src=$(resolve_script_path)
+
+  step 'Installing vpslink'
+
+  printf '  Source script:  %s\n' "$src"
+  printf '  Install as:     %s\n' "$target"
+  printf '  Detected shell: %s (from %s)\n' "$SHELL_NAME" "$SHELL_RAW"
+  printf '  Startup file:   %s\n' "$rc"
+  printf '  PATH line:      %s\n' "$(shell_path_line "$bindir")"
+
+  if ((ASSUME_YES == 0)); then
+    local confirm
+    read -r -p 'Proceed? [y/N]: ' confirm || { printf '\n'; die 'Input stream closed.'; }
+    [[ $confirm =~ ^[Yy]$ ]] || die 'Cancelled; nothing was installed.'
+  fi
+
+  mkdir -p -- "$bindir"
+  chmod -- 755 "$bindir"
+
+  if [[ $src == "$target" ]]; then
+    info 'The script is already running from the install location.'
+    chmod -- 755 "$target" 2>/dev/null || true
+  else
+    cp -- "$src" "$target"
+    chmod -- 755 "$target"
+    success "Installed $target"
+  fi
+
+  rc_apply_block "$rc" "$(shell_path_line "$bindir")"
+  success "PATH entry written to $rc"
+
+  printf '\n%sNext steps%s\n' "$BOLD" "$RESET"
+  printf '  1. Activate it in this terminal:\n'
+  printf '       %s\n' "$(shell_path_now_line "$bindir")"
+  printf '  2. Or start a new terminal (the rc file is read automatically).\n'
+  printf '  3. Check that it worked:\n'
+  printf '       vpslink --version\n'
+  printf '  4. Set up your first VPS alias:\n'
+  printf '       vpslink\n'
+  printf '\n  To remove it later: vpslink --uninstall\n'
+}
+
+uninstall_command() {
+  local bindir=$INSTALL_DIR
+  local target rc
+
+  detect_shell
+  target="$bindir/vpslink"
+  rc=$(shell_rc_file)
+
+  step 'Removing vpslink'
+
+  rc_remove_block "$rc"
+  success "Removed the PATH entry from $rc"
+
+  if [[ -f $target ]]; then
+    rm -f -- "$target"
+    success "Removed $target"
+  else
+    info "Nothing to remove at $target"
+  fi
+
+  printf '\n  The PATH change takes effect in new terminals, or run:\n'
+  printf '       %s\n' "$(shell_path_now_line "$bindir")"
+  printf '  to drop it from the current session.\n'
 }
 
 main() {

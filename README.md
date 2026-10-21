@@ -62,11 +62,33 @@ alias, so the core function still works.
 
 ## 2. Installation
 
+### Automatic — any shell
+
+```bash
+./vpslink.sh --install
+```
+
+This copies the tool to `~/.local/bin/vpslink` and adds that directory to the
+`PATH` in your shell's startup file, using the correct syntax for whichever
+shell you use. It shows you exactly what it will change before doing it, and
+it is idempotent — running it again updates the block instead of adding a
+second one.
+
+To remove it again:
+
+```bash
+vpslink --uninstall
+```
+
+### Manual
+
 ```bash
 # 1. Copy the script somewhere permanent, under the name you want to type
 install -m 0755 vpslink.sh ~/.local/bin/vpslink
 
-# 2. Run it
+# 2. Add it to your PATH (see the table below)
+
+# 3. Run it
 vpslink
 ```
 
@@ -80,6 +102,45 @@ chmod +x vpslink.sh
 `run.sh` is a thin wrapper that `exec`s `vpslink.sh` and forwards all
 arguments, so `./run.sh --help` and `./vpslink.sh --help` behave
 identically.
+
+### Shell support
+
+`--install` detects your login shell from `$SHELL` and writes the matching
+`PATH` line to the right startup file:
+
+| Shell | Startup file | `PATH` line added |
+|---|---|---|
+| Bash | `~/.bashrc` | `export PATH="<dir>:$PATH"` |
+| Zsh | `~/.zshrc` | `export PATH="<dir>:$PATH"` |
+| Fish | `~/.config/fish/config.fish` | `fish_add_path "<dir>"` |
+| csh / tcsh | `~/.cshrc` | `setenv PATH "<dir>":$PATH` |
+| Ksh (ksh93, mksh) | `~/.kshrc` | `export PATH="<dir>:$PATH"` |
+| sh / dash / ash | `~/.profile` | `export PATH="<dir>:$PATH"` |
+| PowerShell | `~/.config/powershell/Microsoft.PowerShell_profile.ps1` | `$env:PATH = "<dir>" + [System.IO.Path]::PathSeparator + $env:PATH` |
+| Elvish | `~/.elvish/rc.elv` | `set-env E:PATH (put $E:PATH \| append <dir>)` |
+| Nushell | `~/.config/nushell/config.nu` | `$env.PATH = ($env.PATH \| prepend "<dir>")` |
+| Xonsh | `~/.xonshrc` | `import os; os.environ['PATH'] = '<dir>' + os.pathsep + os.environ['PATH']` |
+
+Anything else falls back to the POSIX `~/.profile` with a plain `export`.
+
+The block is written between markers so it can be found and replaced later:
+
+```bash
+# >>> vpslink >>>
+export PATH="/home/you/.local/bin:$PATH"
+# <<< vpslink <<<
+```
+
+Existing content in the startup file is preserved, and its permissions are
+left alone.
+
+### Other options
+
+| Option | Effect |
+|---|---|
+| `--install` | Install the command and set up the `PATH` |
+| `--install-dir DIR` | Install somewhere other than `~/.local/bin` |
+| `--uninstall` | Remove the command and its `PATH` entry |
 
 ---
 
@@ -430,12 +491,12 @@ The suite creates a throw-away `HOME` for every test, so **your real
 `~/.ssh/config` is never modified**. It needs no network, no root and no
 live VPS. It exits `0` on success and `1` on any failure.
 
-Latest result on this machine: **137 passed, 0 failed**.
+Latest result on this machine: **176 passed, 0 failed**.
 
 ```bash
 $ ./test-vpslink.sh
 ...
-[1mResult: 137 passed, 0 failed[0m
+[1mResult: 176 passed, 0 failed[0m
 ```
 
 ### Continuous integration
@@ -589,7 +650,7 @@ the contributors.
 .
 ├── vpslink.sh              # the tool (single source of truth)
 ├── run.sh                  # thin wrapper: exec vpslink.sh "$@"
-├── test-vpslink.sh         # isolated regression suite (137 checks)
+├── test-vpslink.sh         # isolated regression suite (176 checks)
 ├── INSTRUCTION.md          # full operating manual
 ├── LICENSE                 # BSD 3-Clause
 ├── .github/workflows/ci.yml
