@@ -53,7 +53,19 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run the regression suite
-        run: ./test-vpslink.sh
+        run: |
+          set -o pipefail
+          if ! ./test-vpslink.sh 2>&1 | tee /tmp/suite.log; then
+            {
+              echo '### Regression suite output'
+              echo '```'
+              cat /tmp/suite.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            # Surface each failed check as an annotation on the run.
+            grep -E '^[[:space:]]+FAIL' /tmp/suite.log | sed 's/^[[:space:]]*FAIL/::error::/' || true
+            exit 1
+          fi
 
   macos:
     name: Test (macOS)
@@ -73,4 +85,16 @@ jobs:
         run: shellcheck -S style vpslink.sh run.sh test-vpslink.sh
 
       - name: Run the regression suite
-        run: ./test-vpslink.sh
+        run: |
+          set -o pipefail
+          if ! ./test-vpslink.sh 2>&1 | tee /tmp/suite.log; then
+            {
+              echo '### Regression suite output'
+              echo '```'
+              cat /tmp/suite.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            # Surface each failed check as an annotation on the run.
+            grep -E '^[[:space:]]+FAIL' /tmp/suite.log | sed 's/^[[:space:]]*FAIL/::error::/' || true
+            exit 1
+          fi
